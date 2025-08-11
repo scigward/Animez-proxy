@@ -1,7 +1,5 @@
 import express from "express";
 import fetch from "node-fetch";
-import path from "path";
-import url from "url";
 
 const app = express();
 
@@ -9,9 +7,61 @@ app.get("/", (req, res) => {
   res.send("Server is running!");
 });
 
+app.get("/getStream", async (req, res) => {
+  const episodeUrl = req.query.url;
+  if (!episodeUrl) {
+    return res.status(400).send("Missing url parameter");
+  }
+
+  try {
+    // 1. Fetch episode page
+    const pageRes = await fetch(episodeUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
+        Referer: "https://animeyy.com/",
+      },
+    });
+    const pageHtml = await pageRes.text();
+
+    // 2. Find iframe
+    const iframeMatch = pageHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+    if (!iframeMatch) {
+      return res.json({ stream: null });
+    }
+    const embedUrl = new URL(iframeMatch[1].trim(), episodeUrl).href;
+
+    // 3. Fetch embed page
+    const embedRes = await fetch(embedUrl, {
+      headers: {
+        Referer: "https://animeyy.com/",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
+      },
+    });
+    const embedHtml = await embedRes.text();
+
+    // 4. Find m3u8 link
+    const srcMatch = embedHtml.match(/<source[^>]+src=["']([^"']+\.m3u8)["']/i);
+    if (!srcMatch) {
+      return res.json({ stream: null });
+    }
+    const streamUrl = new URL(srcMatch[1].trim(), embedUrl).href;
+
+    // 5. Return proxied stream link
+    const proxyUrl = `${req.protocol}://${req.get("host")}/proxy?url=${encodeURIComponent(
+      streamUrl
+    )}&referer=${encodeURIComponent(embedUrl)}`;
+
+    res.json({ stream: proxyUrl });
+  } catch (err) {
+    res.status(500).send(`Error: ${err.message}`);
+  }
+});
+
 app.get("/proxy", async (req, res) => {
   const targetUrl = req.query.url;
-  const realReferer = req.query.realReferer || "";
+  const referer = req.query.referer || "";
 
   if (!targetUrl) {
     return res.status(400).send("Missing url parameter");
@@ -20,41 +70,13 @@ app.get("/proxy", async (req, res) => {
   try {
     const response = await fetch(targetUrl, {
       headers: {
-        Referer: realReferer,
+        Referer: referer,
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
       },
     });
 
-    let contentType = response.headers.get("content-type") || "";
-    res.set("Content-Type", contentType);
-
-    // If it's an m3u8 playlist, rewrite segment & sub-playlist URLs
-    if (contentType.includes("application/vnd.apple.mpegurl") || targetUrl.endsWith(".m3u8")) {
-      let playlist = await response.text();
-
-      const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
-
-      playlist = playlist.replace(/^(?!#)(.*)$/gm, (line) => {
-        line = line.trim();
-        if (!line) return line;
-
-        // Resolve relative URLs
-        let absoluteUrl = line;
-        if (!/^https?:\/\//i.test(line)) {
-          absoluteUrl = new URL(line, baseUrl).href;
-        }
-
-        // Route through our proxy
-        return `${req.protocol}://${req.get("host")}/proxy?url=${encodeURIComponent(
-          absoluteUrl
-        )}&realReferer=${encodeURIComponent(realReferer)}`;
-      });
-
-      return res.send(playlist);
-    }
-
-    // For non-m3u8, just pipe directly
+    res.set("Content-Type", response.headers.get("content-type") || "application/octet-stream");
     response.body.pipe(res);
   } catch (err) {
     res.status(500).send(`Proxy error: ${err.message}`);
