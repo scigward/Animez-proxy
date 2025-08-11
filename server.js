@@ -2,6 +2,8 @@ import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0";
 
 app.get("/", (req, res) => {
   res.send("Server is running!");
@@ -9,81 +11,44 @@ app.get("/", (req, res) => {
 
 app.get("/getStream", async (req, res) => {
   const episodeUrl = req.query.url;
-  if (!episodeUrl) {
-    return res.status(400).send("Missing url parameter");
-  }
+  if (!episodeUrl) return res.status(400).json({ streams: [] });
 
   try {
-    // 1. Fetch episode page
-    const pageRes = await fetch(episodeUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
-        Referer: "https://animeyy.com/",
-      },
+    const pageResp = await fetch(episodeUrl, {
+      headers: { Referer: "https://animeyy.com/", "User-Agent": UA },
     });
-    const pageHtml = await pageRes.text();
+    const pageHtml = await pageResp.text();
 
-    // 2. Find iframe
     const iframeMatch = pageHtml.match(/<iframe[^>]+src=["']([^"']+)["']/i);
-    if (!iframeMatch) {
-      return res.json({ stream: null });
-    }
+    if (!iframeMatch) return res.json({ streams: [] });
     const embedUrl = new URL(iframeMatch[1].trim(), episodeUrl).href;
 
-    // 3. Fetch embed page
-    const embedRes = await fetch(embedUrl, {
-      headers: {
-        Referer: "https://animeyy.com/",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
-      },
+    const embedResp = await fetch(embedUrl, {
+      headers: { Referer: "https://animeyy.com/", "User-Agent": UA },
     });
-    const embedHtml = await embedRes.text();
+    const embedHtml = await embedResp.text();
 
-    // 4. Find m3u8 link
-    const srcMatch = embedHtml.match(/<source[^>]+src=["']([^"']+\.m3u8)["']/i);
-    if (!srcMatch) {
-      return res.json({ stream: null });
-    }
-    const streamUrl = new URL(srcMatch[1].trim(), embedUrl).href;
+    const srcMatch = embedHtml.match(
+      /<source[^>]+src=["']([^"']+\.m3u8)["']/i
+    );
+    if (!srcMatch) return res.json({ streams: [] });
 
-    // 5. Return proxied stream link
-    const proxyUrl = `${req.protocol}://${req.get("host")}/proxy?url=${encodeURIComponent(
-      streamUrl
-    )}&referer=${encodeURIComponent(embedUrl)}`;
+    const realStreamUrl = new URL(srcMatch[1].trim(), embedUrl).href;
 
-    res.json({ stream: proxyUrl });
-  } catch (err) {
-    res.status(500).send(`Error: ${err.message}`);
-  }
-});
-
-app.get("/proxy", async (req, res) => {
-  const targetUrl = req.query.url;
-  const referer = req.query.referer || "";
-
-  if (!targetUrl) {
-    return res.status(400).send("Missing url parameter");
-  }
-
-  try {
-    const response = await fetch(targetUrl, {
-      headers: {
-        Referer: referer,
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
-      },
+    return res.json({
+      streams: [
+        {
+          streamUrl: realStreamUrl,
+          headers: { Referer: embedUrl },
+        },
+      ],
+      subtitles: null,
     });
-
-    res.set("Content-Type", response.headers.get("content-type") || "application/octet-stream");
-    response.body.pipe(res);
   } catch (err) {
-    res.status(500).send(`Proxy error: ${err.message}`);
+    console.error("getStream error:", err);
+    return res.status(500).json({ streams: [] });
   }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+app.listen(port, () => console.log(`Server running on port ${port}`));
