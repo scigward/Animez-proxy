@@ -2,29 +2,36 @@ import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.get("/play-stream", async (req, res) => {
-  const target = req.query.url;
-  if (!target) return res.status(400).json({ error: "Missing url parameter" });
+app.get("/", (req, res) => {
+  res.send("Server is running!");
+});
+
+app.get("/proxy", async (req, res) => {
+  const targetUrl = req.query.url;
+  const referer = req.query.referer || "";
+
+  if (!targetUrl) {
+    return res.status(400).send("Missing url parameter");
+  }
 
   try {
-    const response = await fetch(target, {
+    const response = await fetch(targetUrl, {
       headers: {
-        "Referer": req.query.referer || "",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-      }
+        Referer: referer,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
+      },
     });
 
-    // Forward headers so the player knows it's an m3u8
-    res.setHeader("Content-Type", response.headers.get("content-type") || "application/vnd.apple.mpegurl");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-
+    res.set("Content-Type", response.headers.get("content-type") || "application/octet-stream");
     response.body.pipe(res);
   } catch (err) {
-    console.error("Proxy error:", err);
-    res.status(500).json({ error: "Proxy failed" });
+    res.status(500).send(`Proxy error: ${err.message}`);
   }
 });
 
-app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
